@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 __all__ = ['bilibili_download']
-
+import multiprocessing
 import hashlib
 import re
 import time
@@ -20,6 +20,15 @@ from .sina import sina_download_by_vid
 from .tudou import tudou_download_by_id
 from .youku import youku_download_by_vid
 
+from joblib import Parallel, delayed
+
+
+def mp_map(func, data):
+    with multiprocessing.Pool(processes=(multiprocessing.cpu_count() - 1)) as pool:
+        result = pool.map(func, data)
+        return result
+
+
 class Bilibili(VideoExtractor):
     name = 'Bilibili'
     live_api = 'http://live.bilibili.com/api/playurl?cid={}&otype=json'
@@ -32,13 +41,13 @@ class Bilibili(VideoExtractor):
     SEC1 = '94aba54af9065f71de72f5508f1cd42e'
     SEC2 = '9b288147e5474dd2aa67085f716c560d'
     stream_types = [
-            {'id': 'hdflv'},
-            {'id': 'flv720'},
-            {'id': 'flv'},
-            {'id': 'hdmp4'},
-            {'id': 'mp4'},
-            {'id': 'live'},
-            {'id': 'vc'}
+        {'id': 'hdflv'},
+        {'id': 'flv720'},
+        {'id': 'flv'},
+        {'id': 'hdmp4'},
+        {'id': 'mp4'},
+        {'id': 'live'},
+        {'id': 'vc'}
     ]
     fmt2qlt = dict(hdflv=4, flv=3, hdmp4=2, mp4=1)
 
@@ -70,7 +79,8 @@ class Bilibili(VideoExtractor):
             chksum = hashlib.md5(bytes(params_str+self.SEC2, 'utf8')).hexdigest()
             api_url = self.bangumi_api_url + params_str + '&sign=' + chksum
 
-        xml_str = get_content(api_url, headers={'referer': self.url, 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.84 Safari/537.36'})
+        xml_str = get_content(api_url, headers={'referer': self.url,
+                                                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.84 Safari/537.36'})
         return xml_str
 
     def parse_bili_xml(self, xml_str):
@@ -99,15 +109,15 @@ class Bilibili(VideoExtractor):
             quality = 'hdflv' if bangumi else 'flv'
 
         info_only = kwargs.get('info_only')
-        for qlt in [116,112,80,74,64,32,16,15]:
+        for qlt in [116, 112, 80, 74, 64, 32, 16, 15]:
             api_xml = self.api_req(cid, qlt, bangumi, **kwargs)
             self.parse_bili_xml(api_xml)
         if not info_only or stream_id:
             self.danmuku = get_danmuku_xml(cid)
 
     def prepare(self, **kwargs):
-        if socket.getdefaulttimeout() == 600: # no timeout specified
-            socket.setdefaulttimeout(2) # fail fast, very speedy!
+        if socket.getdefaulttimeout() == 600:  # no timeout specified
+            socket.setdefaulttimeout(2)  # fail fast, very speedy!
 
         # handle "watchlater" URLs
         if '/watchlater/' in self.url:
@@ -179,7 +189,7 @@ class Bilibili(VideoExtractor):
         try:
             page_list = json.loads(re.search(r'"pages":(\[.*?\])', self.page).group(1))
             index_id = int(re.search(r'index_(\d+)', self.url).group(1))
-            cid = page_list[index_id-1]['cid'] # change cid match rule
+            cid = page_list[index_id-1]['cid']  # change cid match rule
         except:
             cid = re.search(r'"cid":(\d+)', self.page).group(1)
         if cid is not None:
@@ -281,6 +291,7 @@ def check_oversea():
                 return False
     return False
 
+
 def check_sid():
     if not cookies:
         return False
@@ -288,6 +299,7 @@ def check_sid():
         if cookie.domain == '.bilibili.com' and cookie.name == 'sid':
             return True
     return False
+
 
 def fetch_sid(cid, aid):
     url = 'http://interface.bilibili.com/player?id=cid:{}&aid={}'.format(cid, aid)
@@ -300,9 +312,11 @@ def fetch_sid(cid, aid):
             return c.value
     raise
 
+
 def collect_bangumi_epids(json_data):
     eps = json_data['episodes'][::-1]
     return [ep['episode_id'] for ep in eps]
+
 
 def get_bangumi_info(season_id):
     BASE_URL = 'http://bangumi.bilibili.com/jsonp/seasoninfo/'
@@ -314,8 +328,10 @@ def get_bangumi_info(season_id):
     json_data = json.loads(season_data)
     return json_data['result']
 
+
 def get_danmuku_xml(cid):
     return get_content('http://comment.bilibili.com/{}.xml'.format(cid))
+
 
 def parse_cid_playurl(xml):
     from xml.dom.minidom import parseString
@@ -339,6 +355,7 @@ def parse_cid_playurl(xml):
         log.w(e)
         return [], 0
 
+
 def bilibili_download_playlist_by_url(url, **kwargs):
     url = url_locations([url])[0]
     kwargs['playlist'] = True
@@ -358,10 +375,14 @@ def bilibili_download_playlist_by_url(url, **kwargs):
         aid = re.search(r'av(\d+)', url).group(1)
         page_list = json.loads(get_content('http://www.bilibili.com/widget/getPageList?aid={}'.format(aid)))
         page_cnt = len(page_list)
-        for no in range(1, page_cnt+1):
+
+        def __download(no):
             page_url = 'http://www.bilibili.com/video/av{}/index_{}.html'.format(aid, no)
-            subtitle = '#%s. %s'% (page_list[no-1]['page'], page_list[no-1]['pagename'])
+            subtitle = '#%s. %s' % (page_list[no-1]['page'], page_list[no-1]['pagename'])
             Bilibili().download_by_url(page_url, subtitle=subtitle, **kwargs)
+
+        Parallel(n_jobs=1000, backend="threading")(delayed(__download)(i) for i in range(1, page_cnt + 1))
+
 
 site = Bilibili()
 download = site.download_by_url
